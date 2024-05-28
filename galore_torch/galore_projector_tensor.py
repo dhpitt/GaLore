@@ -1,6 +1,9 @@
 import torch
+from torch.utils.checkpoint import checkpoint
+
 from tensorly.decomposition import tucker
 from tensorly import tenalg 
+from utils import multi_mode_dot_checkpoint
 
 # The GaLoreProjector class in Python implements a projection method using orthogonal matrix
 # decomposition for low-rank approximation of gradients for general tensors of dimension >2.
@@ -16,13 +19,14 @@ class GaLoreProjectorTensor:
         scale (float, optional): The scaling factor for the projected gradients. Defaults to 1.0.
     """
 
-    def __init__(self, rank, verbose=False, update_proj_gap=200, scale=1.0):
+    def __init__(self, rank, verbose=False, update_proj_gap=200, scale=1.0, activation_checkpointing=True):
         self.rank = rank
         self.verbose = verbose
         self.update_proj_gap = update_proj_gap
         self.scale = scale
         self.ortho_matrix = None
         self.transformed_low_rank = None
+        self.activation_checkpointing = activation_checkpointing
         
     def project(self, full_rank_grad, iter):
         """
@@ -70,7 +74,10 @@ class GaLoreProjectorTensor:
             matrix = module_params.data.float()
         else:
             matrix = module_params.data
-        tucker_tensor = tucker(matrix, rank=rank_all)
+        if self.activation_checkpointing:
+            tucker_tensor = checkpoint(tucker, matrix, rank=rank_all)
+        else:
+            tucker_tensor = tucker(matrix, rank=rank_all)
         return tucker_tensor
 
     def transform(self, tensor, x):
@@ -85,7 +92,10 @@ class GaLoreProjectorTensor:
             torch.Tensor: The transformed tensor.
         """
         _, factors = tensor
-        return tenalg.multi_mode_dot(x, factors, transpose=True)
+        if self.activation_checkpointing:
+            return multi_mode_dot_checkpoint(x, factors, transpose=True)
+        else:
+            return tenalg.multi_mode_dot(x, factors, transpose=True)
 
     def inverse_transform(self, tensor, x):
         """
@@ -99,4 +109,7 @@ class GaLoreProjectorTensor:
             torch.Tensor: The inverse transformed tensor.
         """
         _, factors = tensor
-        return tenalg.multi_mode_dot(x, factors)
+        if self.activation_checkpointing:
+            return multi_mode_dot_checkpoint(x, factors)
+        else:
+            return tenalg.multi_mode_dot(x, factors)
